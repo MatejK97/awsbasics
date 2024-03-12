@@ -1,0 +1,117 @@
+Beanstack
+RDS Instance
+Elastic cache
+Active MQ
+Route 53
+Cloudfront
+
+User > Route 53 > Cloudfront > Beanstack (ELB, backend) < S3 Artifact
+
+keypairs:
+  for beanstack: project-prod-key
+
+Security groups:
+  project-backend-SG
+    ALL TRAFFIC - allowed by project-backend-SG
+    *3306 allowed from EC2-mysql-temp SG
+    ALL TRAFFIC - allow all traffic from Project-app-prod
+    (It is safer to specify the ports)
+RDS
+  Subnet group
+    project-rds-sub-grp
+    Default VPC
+    AZ all
+    Subnet all
+  
+  Parameter group
+    MySQL 8.0
+    project-rds-para-grp
+
+ MySQL
+  Template: Production
+  Multi-AZ DB Cluster
+  Name: project-rds-mysql
+  DB instance Memory optimized
+  Public access: No
+  SG: project-backend-SG
+  DB name
+  Parameter group
+  Log exports: ALL
+
+ *Create EC2-mysql-temp instance ubuntu in the same VPC zone, create SG for it
+   SSH > sudo apt update && sudo apt install mysql-client -y
+   mysql -h $RDS-Endpoint -u $username -p $DB-Name
+   upload database dump file to EC2 instance, import DB using above command
+   Terminate EC2 Instance
+
+Elastic cache
+  Subnet group
+    project-memcached-sub-grp
+    ALL zones
+  
+  Parameter group
+    project-memcached-para-grp
+    memcached1.6
+
+ Memcache Cluster
+  AWS Cloud
+  project-elasticache-svc
+  Parameter group
+  Subnet group
+  SG: project-backend-SG
+
+Amazon MQ
+  Rabbitmq
+  Cluster Deployment
+  project-mq
+  private access
+  SG: project-backend-SG
+
+IAM  
+  New role
+   EC2
+   AWSElasticBeanstackWebTier
+   AdministratorAccess-AWSElasticBeanstack
+   AWSElasticBeanstackRoleSNS
+   AWSElasticBeanstackCustomPlatformforEC2Role
+   Name: Project-bean-role
+
+Beanstack
+  Web server environment
+  Name:Project-app
+
+  Environment
+    Name:Project-app-prod
+    Domain
+  Platform
+  Presets
+    Custom configuration
+  Service access
+    Create and user new service role
+    EC2 key pair: project-prod-key  
+    EC2 instance profile: project-bean-role
+  VPC Default
+  Public Ip activated
+  ALL subnets
+  Auto scaling group
+    Load balanced
+  Scaling trigger
+    NetworkOut
+  https://docs.aws.amazon.com/elasticbeanstalk/latest/dg/using-features.rolling-version-deploy.html
+
+S3 bucket - location of beasnstack
+  Object Ownership
+   ACLs Enabled
+
+Build Artifact
+Beanstack > Environment > Upload and Deploy > Upload Artifact
+
+
+Cloudfront
+  Origin Domain
+    ELB - beanstacks
+  HTTPS only
+  WAF Enabled
+  Add domain.tld
+  Add SSL
+  Create CNAME record

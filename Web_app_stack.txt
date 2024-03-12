@@ -1,0 +1,232 @@
+Web app
+
+Security groups:
+
+  ELB-SG
+  HTTP 80 ALL IPv4
+  HTTPS 443 ALL IPv4
+
+  APP-SG
+  Port 8080 from ELB-SG
+  *Optional
+  SSH 22 from My-IP
+  HTTP 80 from My-IP
+
+  BACKEND-SG
+  MySQL 3306 from APP-SG - MySQL
+  Port 11211 from APP-SG - Memcache
+  Port 5673 from APP-SG - Rabbitmq
+  ALL Traffic from BACKEND-SG
+  *Optional
+  SSH 22 from My-IP
+
+Ec2 Instances:
+
+  Project1-DB
+
+  Alma9
+  T2.Micro
+  BACKEND-SG
+  Script:
+
+  #!/bin/bash
+  DATABASE_PASS='admin123'
+  sudo yum update -y
+  sudo yum install epel-release -y
+  sudo yum install git zip unzip -y
+  sudo yum install mariadb-server -y
+
+
+  # starting & enabling mariadb-server
+  sudo systemctl start mariadb
+  sudo systemctl enable mariadb
+  cd /tmp/
+  git clone -b main https://github.com/hkhcoder/vprofile-project.git
+  #restore the dump file for the application
+  sudo mysqladmin -u root password "$DATABASE_PASS"
+  sudo mysql -u root -p"$DATABASE_PASS" -e "UPDATE mysql.user SET Password=PASSWORD('$DATABASE_PASS') WHERE User='root'"
+  sudo mysql -u root -p"$DATABASE_PASS" -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1')"
+  sudo mysql -u root -p"$DATABASE_PASS" -e "DELETE FROM mysql.user WHERE User=''"
+  sudo mysql -u root -p"$DATABASE_PASS" -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\_%'"
+  sudo mysql -u root -p"$DATABASE_PASS" -e "FLUSH PRIVILEGES"
+  sudo mysql -u root -p"$DATABASE_PASS" -e "create database accounts"
+  sudo mysql -u root -p"$DATABASE_PASS" -e "grant all privileges on accounts.* TO 'admin'@'localhost' identified by 'admin123'"
+  sudo mysql -u root -p"$DATABASE_PASS" -e "grant all privileges on accounts.* TO 'admin'@'%' identified by 'admin123'"
+  sudo mysql -u root -p"$DATABASE_PASS" accounts < /tmp/vprofile-project/src/main/resources/db_backup.sql
+  sudo mysql -u root -p"$DATABASE_PASS" -e "FLUSH PRIVILEGES"
+
+  # Restart mariadb-server
+  sudo systemctl restart mariadb
+
+
+  #starting the firewall and allowing the mariadb to access from port no. 3306
+  sudo systemctl start firewalld
+  sudo systemctl enable firewalld
+  sudo firewall-cmd --get-active-zones
+  sudo firewall-cmd --zone=public --add-port=3306/tcp --permanent
+  sudo firewall-cmd --reload
+  sudo systemctl restart mariadb
+
+  Project1-MC
+
+  Alma9
+  T2.micro
+  BACKEND-SG
+  Script:
+
+  #!/bin/bash
+  sudo dnf install epel-release -y
+  sudo dnf install memcached -y
+  sudo systemctl start memcached
+  sudo systemctl enable memcached
+  sudo systemctl status memcached
+  sed -i 's/127.0.0.1/0.0.0.0/g' /etc/sysconfig/memcached
+  sudo systemctl restart memcached
+  firewall-cmd --add-port=11211/tcp
+  firewall-cmd --runtime-to-permanent
+  firewall-cmd --add-port=11111/udp
+  firewall-cmd --runtime-to-permanent
+  sudo memcached -p 11211 -U 11111 -u memcached -d
+
+  Project1-MQ
+
+  Alma9
+  T2.micro
+  BACKEND-SG
+  Script:
+
+  #!/bin/bash
+  sudo yum install epel-release -y
+  sudo yum update -y
+  sudo yum install wget -y
+  cd /tmp/
+  dnf -y install centos-release-rabbitmq-38
+  dnf --enablerepo=centos-rabbitmq-38 -y install rabbitmq-server
+  systemctl enable --now rabbitmq-server
+  firewall-cmd --add-port=5672/tcp
+  firewall-cmd --runtime-to-permanent
+  sudo systemctl start rabbitmq-server
+  sudo systemctl enable rabbitmq-server
+  sudo systemctl status rabbitmq-server
+  sudo sh -c 'echo "[{rabbit, [{loopback_users, []}]}]." > /etc/rabbitmq/rabbitmq.config'
+  sudo rabbitmqctl add_user test test
+  sudo rabbitmqctl set_user_tags test administrator
+  sudo systemctl restart rabbitmq-server
+
+  Project1-APP
+
+  Ubuntu22
+  T2.micro
+  APP-SG
+  Script:
+
+  #!/bin/bash
+  sudo apt update
+  sudo apt upgrade -y
+  sudo apt install openjdk-11-jdk -y
+  sudo apt install tomcat9 tomcat9-admin tomcat9-docs tomcat9-common git -y
+  sudo apt install awscli -y
+
+Route53:
+
+  Hosted zone - Private
+
+  Region - us-east-1
+
+  Records:
+    Simple routing:
+    A:
+      db.domain.tld - Private IPv4 of Project1-DB
+      mc.domain.tld - Private IPv4 of Project1-MC
+      mq.domain.tld - Private IPv4 of Project1-MQ
+
+Artifact:
+
+  Src>Main>Resources>Application.properties
+
+  Update URL/active.host to match the A records from Route53
+
+  mvn install
+
+IAM user:
+
+  s3admin
+
+  Policy:
+  AmazonS3FullAccess
+
+  AccessKey:
+  CLI
+
+  CLI:
+  aws configure
+  Access key
+  Secret access key
+  us-east-1
+  json
+
+Create s3 bucket:
+  aws s3 mb s3://project1-arts-2024
+
+  aws s3 cp target/vprofile-v2.war s3://project1-arts-2024/
+
+IAM role:
+
+  AWS service
+  EC2
+  AmazonS3FullAccess
+  Name - project1-s3
+
+  Project1-APP > Action > Security > Change IAM role > project1-s3
+
+SSH Project1-APP
+
+  aws s3 cp s3://project1-arts-2024/vprofile-v2.war /tmp/
+  systemctl stop tomcat9
+  rm -rf /var/lib/tomcat9/webapps/ROOT
+  cp /tmp/vprofile-v2.war /var/lib/tomcat9/webapps/ROOT.war
+  systemctl start tomcat9
+
+ELB setup:
+
+  Target group:
+    Project1-APP-TG
+    HTTP 8080
+    Instances:
+      Project1-APP
+
+Load Balancer:
+  Application LB:
+    Name -Project1-PROD-ELB
+    Public
+    ALL zones
+    SG - Project1-ELB-SG
+    Listeners - HTTPS 443 -Project1-APP-TG
+    Select your certificate for *.domain.tld
+
+Autoscaling group:
+
+  Project1-APP > Action > Create Image
+    Name - Project1-APP-Image
+
+  Launch Configuration:
+    Name - Project1-APP-LC
+    AMI - Project1-APP-Image
+    T2.micro
+    IAM role - project1-s3
+    SG - Project1-APP-SG
+
+  ASG:
+    Name - Project1-APP-ASG
+    LC -Project1-APP-LC
+    ALL subnets
+    Enable load Balancing - Project1-APP-TG
+    Healt check - ELB
+    Capacity:
+      Desire - 2
+      Min - 1
+      Max - 4
+    Scaling policy:
+      Avr CPU util
+      Value - 50
+  
